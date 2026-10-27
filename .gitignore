@@ -1,0 +1,74 @@
+# Unreal Engine generated and machine-local output.
+# Source, Content, Config, and data/ are kept and pushed.
+
+.vs/
+.vscode/
+.idea/
+
+*.slo
+*.lo
+*.o
+*.obj
+*.gch
+*.pch
+*.so
+*.dylib
+*.dll
+*.mod
+*.lai
+*.la
+*.a
+*.lib
+*.exe
+*.out
+*.app
+*.ipa
+
+*.xcodeproj
+*.xcworkspace
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+.vsconfig
+
+SourceArt/**/*.png
+SourceArt/**/*.tga
+
+Binaries/*
+Plugins/**/Binaries/*
+Build/*
+!Build/*/
+Build/*/**
+!Build/*/PakBlacklist*.txt
+!Build/**/*.ico
+*_BuiltData.uasset
+Saved/*
+Intermediate/*
+Plugins/**/Intermediate/*
+DerivedDataCache/*
+
+# The precompiled engine stays outside this repo (~/UnrealEngine).
+/UnrealEngine/
+/Engine/
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+id_rsa
+id_ed25519
+
+# OS and download leftovers
+.DS_Store
+Thumbs.db
+*.crdownload
+*.tmp
+
+# Runtime log if a copy lands in the tree
+auto-commit.log
+logs/
