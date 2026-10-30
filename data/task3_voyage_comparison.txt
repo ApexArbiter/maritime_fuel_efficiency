@@ -1,0 +1,6 @@
+VOYAGE Container ship | summer calm | sim 210.0 s | path 1148 m | planned 1220 m | mean offset 20.9 m | max offset 36.1 m | fuel 0.048 t | mean 10.6 kn | heave peak 0.40 m | arrived
+VOYAGE Aframax tanker | summer calm | sim 242.4 s | path 1158 m | planned 1234 m | mean offset 12.2 m | max offset 27.0 m | fuel 0.030 t | mean 9.3 kn | heave peak 0.40 m | arrived
+VOYAGE Panamax bulker | summer calm | sim 240.9 s | path 1151 m | planned 1227 m | mean offset 10.4 m | max offset 25.8 m | fuel 0.023 t | mean 9.3 kn | heave peak 0.40 m | arrived
+VOYAGE Container ship | winter storm | sim 600.0 s | path 3094 m | planned 1220 m | mean offset 248.6 m | max offset 577.8 m | fuel 0.283 t | mean 10.0 kn | heave peak 4.00 m | timed out
+VOYAGE Aframax tanker | winter storm | sim 600.0 s | path 1961 m | planned 1234 m | mean offset 108.9 m | max offset 296.6 m | fuel 0.171 t | mean 6.4 kn | heave peak 4.00 m | timed out
+VOYAGE Panamax bulker | winter storm | sim 381.2 s | path 1274 m | planned 1227 m | mean offset 59.6 m | max offset 103.4 m | fuel 0.116 t | mean 6.5 kn | heave peak 4.00 m | arrived

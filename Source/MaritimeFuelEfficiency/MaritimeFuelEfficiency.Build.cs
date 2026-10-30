@@ -21,7 +21,8 @@ public class MaritimeFuelEfficiency : ModuleRules
 			"GeoReferencing",
 			"SunPosition",
 			"Sockets",
-			"Networking"
+			"Networking",
+			"ProceduralMeshComponent"
 		});
 	}
 }
