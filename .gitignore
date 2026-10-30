@@ -54,7 +54,7 @@ DerivedDataCache/*
 /UnrealEngine/
 /Engine/
 
-# Secrets
+# Secrets. The GitHub token lives in .env on this machine and is not pushed.
 .env
 .env.*
 *.pem
@@ -62,6 +62,12 @@ DerivedDataCache/*
 credentials.json
 id_rsa
 id_ed25519
+
+# Generated leftovers
+__pycache__/
+*.py[cod]
+*.bak
+*.bak.*
 
 # OS and download leftovers
 .DS_Store

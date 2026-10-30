@@ -66,7 +66,33 @@ export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-$GIT_AUTHOR_EMAIL}"
     exit 1
   fi
 
-  if git push origin HEAD; then
+  if [[ -f "$REPO/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$REPO/.env"
+    set +a
+  fi
+
+  pushed=0
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    ask="$(mktemp)"
+    cat >"$ask" <<'ASK'
+#!/bin/sh
+case "$1" in
+  *Username*) printf '%s\n' 'x-access-token' ;;
+  *) printf '%s\n' "$GITHUB_TOKEN" ;;
+esac
+ASK
+    chmod 700 "$ask"
+    if GIT_ASKPASS="$ask" GIT_TERMINAL_PROMPT=0 git -c credential.helper= push "https://github.com/ApexArbiter/maritime_fuel_efficiency.git" HEAD:main; then
+      pushed=1
+    fi
+    rm -f "$ask"
+  elif git push origin HEAD; then
+    pushed=1
+  fi
+
+  if [[ "$pushed" -eq 1 ]]; then
     echo "pushed $(git rev-parse --short HEAD)"
   else
     echo "PUSH FAILED. This snapshot is only on this machine until GitHub authentication works."
