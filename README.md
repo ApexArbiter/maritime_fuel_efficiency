@@ -1,6 +1,6 @@
 # Maritime fuel efficiency
 
-Unreal project and datasets for this machine. The precompiled engine is installed separately and is not stored in git.
+Unreal project and datasets for this machine. The precompiled engine is installed separately and is not stored in git. A new machine should start with `docs/HANDOVER.md`.
 
 ## Layout
 
