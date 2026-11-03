@@ -419,6 +419,7 @@ void AFleetShip::ResetVoyage()
 	RollDeg = 0.f;
 	RollVel = 0.f;
 	RudderDeg = 0.f;
+	bMotionSample = false;
 	SetActorLocation(FVector(RouteOrigin.X, RouteOrigin.Y, 0.f));
 	SetActorRotation(FRotator(0.f, YawDeg, 0.f));
 	SpeedKnots = (SurgeCms / 100.f) * 1.943844f;
@@ -491,6 +492,7 @@ void AFleetShip::ApplyMotion(float DeltaSeconds, float InSurgeCms, float InSwayC
 	PitchDeg = FMath::Clamp(InPitchDeg, -8.f, 8.f);
 	RollDeg = FMath::Clamp(InRollDeg, -12.f, 12.f);
 	FuelTonnesPerHour = InFuelTonnesPerHour;
+	bMotionSample = FMath::IsFinite(SurgeCms) && FMath::IsFinite(SwayCms) && FMath::IsFinite(YawDeg);
 
 	const float YawRad = FMath::DegreesToRadians(YawDeg);
 	const FVector Forward(FMath::Cos(YawRad), FMath::Sin(YawRad), 0.f);
@@ -504,4 +506,54 @@ void AFleetShip::ApplyMotion(float DeltaSeconds, float InSurgeCms, float InSwayC
 	LeewayDeg = FMath::RadiansToDegrees(FMath::Atan2(SwayCms, FMath::Max(SurgeCms, 50.f)));
 	const float HoursRemaining = (DistanceRemainingM / FMath::Max(SurgeCms / 100.f, 0.5f)) / 3600.f;
 	FuelRemainingTonnes = FuelTonnesPerHour * HoursRemaining;
+}
+
+FFleetMotionReadout AFleetShip::GetMotionReadout(bool bSampleFresh, bool bCurrentValid, float CurrentMs, float CurrentDeg) const
+{
+	// Matches route_telemetry.kinematic_speeds. Knots use the same 1.943844 factor
+	// already used for the surge diagnostic. Invalid samples stay unset.
+	FFleetMotionReadout Out;
+	if (!bSampleFresh || !bMotionSample || !FMath::IsFinite(SurgeCms) || !FMath::IsFinite(SwayCms) || !FMath::IsFinite(YawDeg))
+	{
+		return Out;
+	}
+	const float YawRad = FMath::DegreesToRadians(YawDeg);
+	const float ForwardX = FMath::Cos(YawRad);
+	const float ForwardY = FMath::Sin(YawRad);
+	const float RightX = -ForwardY;
+	const float RightY = ForwardX;
+	const float EastMs = (ForwardX * SurgeCms + RightX * SwayCms) / 100.f;
+	const float NorthMs = (ForwardY * SurgeCms + RightY * SwayCms) / 100.f;
+	const float SogMs = FMath::Sqrt(EastMs * EastMs + NorthMs * NorthMs);
+	constexpr float KnotsPerMs = 1.943844f;
+	constexpr float CogMinMs = 0.05f;
+	Out.bSurgeValid = true;
+	Out.SurgeKn = (SurgeCms / 100.f) * KnotsPerMs;
+	Out.bSogValid = true;
+	Out.SogKn = SogMs * KnotsPerMs;
+	if (SogMs >= CogMinMs)
+	{
+		float Cog = FMath::RadiansToDegrees(FMath::Atan2(NorthMs, EastMs));
+		while (Cog > 180.f)
+		{
+			Cog -= 360.f;
+		}
+		while (Cog < -180.f)
+		{
+			Cog += 360.f;
+		}
+		Out.bCogValid = true;
+		Out.CogDeg = Cog;
+	}
+	if (bCurrentValid && FMath::IsFinite(CurrentMs) && FMath::IsFinite(CurrentDeg))
+	{
+		const float CurrentRad = FMath::DegreesToRadians(CurrentDeg);
+		const float CurrentEast = FMath::Cos(CurrentRad) * CurrentMs;
+		const float CurrentNorth = FMath::Sin(CurrentRad) * CurrentMs;
+		const float WaterEast = EastMs - CurrentEast;
+		const float WaterNorth = NorthMs - CurrentNorth;
+		Out.bStwValid = true;
+		Out.StwKn = FMath::Sqrt(WaterEast * WaterEast + WaterNorth * WaterNorth) * KnotsPerMs;
+	}
+	return Out;
 }

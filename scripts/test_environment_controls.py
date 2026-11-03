@@ -138,6 +138,60 @@ class EnvironmentControlTest(unittest.TestCase):
         self.assertEqual(len(values), 10)
         self.assertTrue(math.isfinite(values[8]))
 
+    def test_repeated_requests_keep_their_own_sequence(self):
+        for seq in (1, 2, 2, 40):
+            reply = mmg.handle(packet(seq, 0.02, float(seq), 400.0, 30.0, 25.0, 40.0, 40.0, 30.0))
+            echoed = struct.unpack_from("<I", reply, 4)[0]
+            self.assertEqual(echoed, seq)
+
+    def test_malformed_reply_is_ignored_and_a_later_valid_packet_recovers(self):
+        self.assertIsNone(mmg.handle(b""))
+        self.assertIsNone(mmg.handle(b"XXXX" + b"\x00" * 40))
+        rejected = mmg.handle(packet(7, float("nan"), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+        self.assertTrue(rejected.endswith(b"REJ1"))
+        recovered = mmg.handle(packet(8, 0.02, 1.0, 400.0, 30.0, 25.0, 40.0, 130.0, 110.0))
+        self.assertIn(b"ACK1", recovered)
+        ack = mmg.ACK.unpack_from(recovered, recovered.index(b"ACK1"))
+        self.assertAlmostEqual(ack[5], 130.0, places=3)
+
+    def test_late_reply_is_applied_once_and_not_after_a_newer_request(self):
+        """Client rule: one outstanding request. A late match applies once.
+        After a timeout, that same reply must not move the newer step.
+        """
+        outstanding = None
+        applied = []
+        stale = []
+
+        def send(seq):
+            nonlocal outstanding
+            self.assertIsNone(outstanding)
+            outstanding = seq
+
+        def take(seq):
+            nonlocal outstanding
+            if outstanding is None or seq != outstanding:
+                stale.append(seq)
+                return False
+            applied.append(seq)
+            outstanding = None
+            return True
+
+        def timeout():
+            nonlocal outstanding
+            outstanding = None
+
+        send(1)
+        self.assertFalse(take(0))
+        self.assertTrue(take(1))
+        self.assertFalse(take(1))
+        send(2)
+        timeout()
+        self.assertFalse(take(2))
+        send(3)
+        self.assertTrue(take(3))
+        self.assertEqual(applied, [1, 3])
+        self.assertEqual(stale, [0, 1, 2])
+
 
 if __name__ == "__main__":
     unittest.main()

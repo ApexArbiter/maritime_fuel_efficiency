@@ -260,7 +260,11 @@ def self_test():
 
 def serve():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("127.0.0.1", 9001))
+    try:
+        sock.bind(("127.0.0.1", 9001))
+    except OSError as error:
+        print(f"MMG physics did not start a second process. Port 9001 is in use: {error}", flush=True)
+        return
     print("MMG physics listening on 127.0.0.1:9001", flush=True)
     while True:
         payload, addr = sock.recvfrom(65535)

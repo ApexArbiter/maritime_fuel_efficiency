@@ -32,7 +32,7 @@ Headless check:
 scripts/run-water-test.sh
 ```
 
-The log is `logs/ue_water_test.log`. A passing run prints `WATER TEST PASS` after about 12 seconds of play: the waves vary, the 200 kg cube stays up, the 3000 kg cube sinks, and the ship stays near the still-water line.
+The log is `logs/ue_water_test.log`. A passing run prints `WATER TEST PASS` after about 12 seconds. That line is a buoyancy fixture, not a rendered-picture check. The wave query must vary, both cubes must be simulating physics, the 200 kg cube must stay between -150 cm and 400 cm, the 3000 kg cube must be below -500 cm, and the ship hull must stay kinematic (`simulating 0`) within 150 cm of the waterline with all five pontoons wet. `scripts/run-water-test.sh` passes `-nullrhi`. The PASS line does not judge water color, reflections, or weather appearance. A negative iron height means the dense cube is below the spawn waterline. The fixture does not require it to have reached a seabed.
 
 ## Fleet ships and the environment
 

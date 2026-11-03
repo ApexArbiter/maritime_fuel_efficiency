@@ -8,6 +8,7 @@
 
 class FSocket;
 class FInternetAddr;
+class UMaterialInstanceDynamic;
 class UProceduralMeshComponent;
 
 UCLASS()
@@ -36,8 +37,14 @@ public:
 	void NudgeHour(float DeltaHours);
 	void ToggleDayNightCycle();
 	void SetVisualSea(int32 Index);
+	void SetWavePeriod(float Seconds);
+	void NudgeWavePeriod(float DeltaSeconds);
+	void SetAtmosphere(int32 Index);
 
 	const FString& GetVisualSeaName() const { return VisualSeaName; }
+	float GetWavePeriodS() const { return WavePeriodS; }
+	const FString& GetAtmosphereName() const { return AtmosphereName; }
+	bool IsRaining() const { return bRaining; }
 
 	const FString& GetPresetName() const { return PresetName; }
 	float GetTimeScale() const { return TimeScale; }
@@ -86,15 +93,24 @@ private:
 	void VisualCalm() { SetVisualSea(0); }
 	void VisualModerate() { SetVisualSea(1); }
 	void VisualRough() { SetVisualSea(2); }
+	void PeriodShorter() { NudgeWavePeriod(-2.f); }
+	void PeriodLonger() { NudgeWavePeriod(2.f); }
+	void AtmosphereSeasonal() { SetAtmosphere(0); }
+	void AtmosphereClear() { SetAtmosphere(1); }
+	void AtmosphereCloudy() { SetAtmosphere(2); }
+	void AtmosphereRain() { SetAtmosphere(3); }
 	void HourLater() { NudgeHour(1.f); }
 	void HourEarlier() { NudgeHour(-1.f); }
 	void LaunchPhysics();
+	bool ProbeExistingPhysics();
 	void ApplySeaToWorld();
 	void ApplySun();
 	void StyleOceanSurface();
 	void BuildVisualSea();
 	void UpdateVisualSea();
 	void ExchangePhysics(float DeltaSeconds);
+	void DrainPhysicsReplies();
+	void ApplyMatchedReply(const uint8* Data, int32 Size);
 	void RunControlDemo(float RealDt);
 	void LogControlShip(const TCHAR* Label) const;
 	void TrackVoyage(float DeltaSeconds);
@@ -115,6 +131,10 @@ private:
 	float CurrentDeg = 40.f;
 	float WaveM = 0.4f;
 	float WaveDeg = 30.f;
+	float WavePeriodS = 8.f;
+	int32 Atmosphere = 0;
+	FString AtmosphereName = TEXT("seasonal sky");
+	bool bRaining = false;
 	int32 VisualSea = 1;
 	FString VisualSeaName = TEXT("moderate visual");
 	float SunLux = 12.f;
@@ -131,6 +151,11 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UProceduralMeshComponent> VisualSeaMesh;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInstanceDynamic> VisualSeaMaterial;
+
+	float LastAppliedRoughness = -1.f;
 
 	TArray<FVector2D> VisualSeaXY;
 	TArray<int32> VisualSeaTriangles;
@@ -151,8 +176,24 @@ private:
 	float AppliedCurrentDeg = 40.f;
 	float AppliedWaveM = 0.4f;
 	float AppliedWaveDeg = 30.f;
+	float SmoothedWaveM = 0.4f;
+	float LastLoggedSwellCm = -1.f;
 	bool bLoggedDisconnect = false;
+	bool bRestoreLitView = false;
+	int32 LitRestoreFrames = 0;
+	bool bOutstanding = false;
+	uint32 OutstandingSeq = 0;
+	float OutstandingDt = 0.f;
+	int32 OutstandingFrames = 0;
+	int32 TimeoutCount = 0;
+	int32 StaleReplies = 0;
+	int32 InvalidPackets = 0;
 	int32 MissedReplies = 0;
+	bool bPerfLog = false;
+	float PerfAccum = 0.f;
+	int32 PerfFrames = 0;
+	int32 PerfSeconds = 0;
+	bool bProfileRequested = false;
 
 	FSocket* PhysicsSocket = nullptr;
 	TSharedPtr<FInternetAddr> PhysicsAddress;

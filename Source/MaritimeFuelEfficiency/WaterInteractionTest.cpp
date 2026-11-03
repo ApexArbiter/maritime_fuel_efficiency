@@ -6,6 +6,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "ShipPawn.h"
+#include "Misc/CommandLine.h"
 #include "TimerManager.h"
 #include "WaterBodyActor.h"
 #include "WaterBodyComponent.h"
@@ -176,11 +177,9 @@ void AWaterInteractionTest::FinishTest()
 
 	const float ShipZ = Ship ? Ship->GetActorLocation().Z : 100000.f;
 	const bool bShipSimulating = Ship && Ship->GetHull() && Ship->GetHull()->IsSimulatingPhysics();
-	bool bShipWet = false;
 	int32 WetPontoons = 0;
 	if (Ship && Ship->GetBuoyancy())
 	{
-		bShipWet = Ship->GetBuoyancy()->IsOverlappingWaterBody() || Ship->GetBuoyancy()->IsInWaterBody();
 		for (const FSphericalPontoon& Pontoon : Ship->GetBuoyancy()->BuoyancyData.Pontoons)
 		{
 			if (Pontoon.bIsInWater)
@@ -188,22 +187,28 @@ void AWaterInteractionTest::FinishTest()
 				++WetPontoons;
 			}
 		}
-		if (WetPontoons > 0)
-		{
-			bShipWet = true;
-		}
 	}
 
+	// The 200 kg and 3000 kg cubes are the physics probes. ShipPawn forces the
+	// hull to stay kinematic, and its constructor adds exactly five pontoons.
+	const bool bWoodSimulating = Wood && Wood->GetBody() && Wood->GetBody()->IsSimulatingPhysics();
+	const bool bIronSimulating = Iron && Iron->GetBody() && Iron->GetBody()->IsSimulatingPhysics();
+	const bool bProbePhysics = bWoodSimulating && bIronSimulating;
+	const bool bVelocitiesFinite = FMath::IsFinite(WoodVelocity.Z) && FMath::IsFinite(IronVelocity.Z);
 	const bool bWoodFloats = WoodZ >= -150.f && WoodZ <= 400.f;
 	const bool bIronSinks = IronZ < -500.f;
 	const bool bSeparated = (WoodZ - IronZ) >= 300.f;
 	const bool bShipHeld = Ship && FMath::Abs(ShipZ) <= 150.f && !bShipSimulating;
+	const bool bPontoonsWet = WetPontoons == 5;
+	const bool bNullRhi = FParse::Param(FCommandLine::Get(), TEXT("nullrhi"));
 
-	const bool bPass = bWavesPassed && bWoodFloats && bIronSinks && bSeparated && bShipHeld && bShipWet;
+	const bool bPass = bWavesPassed && bProbePhysics && bVelocitiesFinite && bWoodFloats && bIronSinks && bSeparated && bShipHeld && bPontoonsWet;
 
-	UE_LOG(LogWaterTest, Display, TEXT("Wood %.1f cm, vertical speed %.1f cm/s"), WoodZ, WoodVelocity.Z);
-	UE_LOG(LogWaterTest, Display, TEXT("Iron %.1f cm, vertical speed %.1f cm/s"), IronZ, IronVelocity.Z);
-	UE_LOG(LogWaterTest, Display, TEXT("Ship %.1f cm, simulating %d, wet pontoons %d"), ShipZ, bShipSimulating ? 1 : 0, WetPontoons);
+	UE_LOG(LogWaterTest, Display, TEXT("Wood %.1f cm, float gate -150 to 400, simulating %d, vertical speed %.1f cm/s"), WoodZ, bWoodSimulating ? 1 : 0, WoodVelocity.Z);
+	UE_LOG(LogWaterTest, Display, TEXT("Iron %.1f cm, sink gate below -500, simulating %d, vertical speed %.1f cm/s"), IronZ, bIronSimulating ? 1 : 0, IronVelocity.Z);
+	UE_LOG(LogWaterTest, Display, TEXT("Iron below the spawn waterline means the 3000 kg cube sank. The gate does not require a seabed, and a negative vertical speed means it is still descending."));
+	UE_LOG(LogWaterTest, Display, TEXT("Ship hull %.1f cm, kinematic simulating %d (0 is required), wet pontoons %d of 5"), ShipZ, bShipSimulating ? 1 : 0, WetPontoons);
+	UE_LOG(LogWaterTest, Display, TEXT("WATER TEST CLASS %s buoyancy fixture. PASS checks the wave query, probe physics, and the kinematic ship. It does not judge rendered color, reflections, or weather appearance."), bNullRhi ? TEXT("null-rhi") : TEXT("rendered-rhi"));
 	UE_LOG(LogWaterTest, Display, TEXT("%s"), bPass ? TEXT("WATER TEST PASS") : TEXT("WATER TEST FAIL"));
 
 	FPlatformMisc::RequestExit(false);

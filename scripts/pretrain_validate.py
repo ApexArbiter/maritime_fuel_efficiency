@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """Fail-closed checks that must pass before model training.
 
-This repository has no Gym environment and no training script. The fleet UDP
-server, the water test, and the fleet demo do not call this gate. Any future
-Python training entry point under this repo must call `enforce_training_gate`
-or this scan rejects it.
+`entry_points` counts Python files named train*.py or *_train.py, and files
+that mention a training-framework call. A count of 0 means no trainer is
+registered. It does not mean the routing environment is missing.
+
+The routing environment is constructed by `mmg_env.make_routing_env`
+(`MaritimeRouting-v0`). That module is intentionally absent from this count.
+No external training package is installed in this environment.
+
+The fleet UDP server, the water test, and the fleet demo do not call this
+gate. Any future Python training entry point under this repo must call
+`enforce_training_gate` or this scan rejects it.
 """
 
 import os
@@ -85,6 +92,7 @@ def enforce_training_gate():
 
     print("TRAINING_GATE pass steady_diameter_m=%.3f advance_m=%.3f tactical_diameter_m=%.3f fuel_kg_s=%.7f" % (steady, advance, tactical, rate))
     print("TRAINING_GATE entry_points=%d" % len(training_entry_points()))
+    print("TRAINING_GATE discovery=mmg_env:make_routing_env id=MaritimeRouting-v0 reason=no registered trainer and no external training package")
     return 0
 
 

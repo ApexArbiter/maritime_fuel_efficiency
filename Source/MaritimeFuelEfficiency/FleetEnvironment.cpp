@@ -2,6 +2,8 @@
 
 #include "Components/LightComponent.h"
 #include "Engine/DirectionalLight.h"
+#include "Engine/ExponentialHeightFog.h"
+#include "Components/ExponentialHeightFogComponent.h"
 #include "Engine/Engine.h"
 #include "Components/SkyLightComponent.h"
 #include "Engine/SkyLight.h"
@@ -45,6 +47,24 @@ namespace
 		FLinearColor SunColor;
 	};
 
+	struct FAtmosphere
+	{
+		const TCHAR* Name;
+		float Cloud;
+		float ExposureAdd;
+		float SkyMul;
+		float Fog;
+		float Rain;
+	};
+
+	// Index 0 leaves the seasonal exposure alone. The other rows match scripts/weather_presets.py.
+	const FAtmosphere Atmospheres[] = {
+		{ TEXT("seasonal sky"), 0.0f, 0.0f, 1.0f, 0.0f, 0.0f },
+		{ TEXT("clear"), 0.08f, 0.15f, 1.05f, 0.0f, 0.0f },
+		{ TEXT("cloudy"), 0.62f, -0.25f, 0.72f, 0.004f, 0.0f },
+		{ TEXT("rain"), 0.88f, -0.55f, 0.48f, 0.012f, 1.0f }
+	};
+
 	const FSeaPreset Presets[] = {
 		{ TEXT("summer calm"), 6, 13.f, 4.f, 30.f, 0.25f, 40.f, 0.4f, 30.f, 12.f, 0.25f, FLinearColor(1.f, 0.96f, 0.88f) },
 		{ TEXT("spring tide"), 3, 9.f, 8.f, 110.f, 1.4f, 120.f, 1.3f, 110.f, 9.f, 0.05f, FLinearColor(0.95f, 0.97f, 1.f) },
@@ -77,6 +97,7 @@ void AFleetEnvironment::BeginPlay()
 	bVoyageCompare = FParse::Param(FCommandLine::Get(), TEXT("VoyageCompare"));
 	bEnvDemo = FParse::Param(FCommandLine::Get(), TEXT("EnvDemo")) && !bVoyageCompare;
 	bControlDemo = FParse::Param(FCommandLine::Get(), TEXT("ControlDemo")) && !bVoyageCompare;
+	bPerfLog = FParse::Param(FCommandLine::Get(), TEXT("PerfLog"));
 	LaunchPhysics();
 	ApplyPreset(0);
 	BuildVisualSea();
@@ -158,6 +179,11 @@ void AFleetEnvironment::BindControls()
 	InputComponent->BindKey(EKeys::F5, IE_Pressed, this, &AFleetEnvironment::VisualCalm);
 	InputComponent->BindKey(EKeys::F6, IE_Pressed, this, &AFleetEnvironment::VisualModerate);
 	InputComponent->BindKey(EKeys::F7, IE_Pressed, this, &AFleetEnvironment::VisualRough);
+	InputComponent->BindKey(EKeys::LeftBracket, IE_Pressed, this, &AFleetEnvironment::PeriodShorter);
+	InputComponent->BindKey(EKeys::RightBracket, IE_Pressed, this, &AFleetEnvironment::PeriodLonger);
+	InputComponent->BindKey(EKeys::F8, IE_Pressed, this, &AFleetEnvironment::AtmosphereClear);
+	InputComponent->BindKey(EKeys::F10, IE_Pressed, this, &AFleetEnvironment::AtmosphereCloudy);
+	InputComponent->BindKey(EKeys::F12, IE_Pressed, this, &AFleetEnvironment::AtmosphereRain);
 	InputComponent->BindKey(EKeys::T, IE_Pressed, this, &AFleetEnvironment::HourLater);
 	InputComponent->BindKey(EKeys::G, IE_Pressed, this, &AFleetEnvironment::HourEarlier);
 	InputComponent->BindKey(EKeys::N, IE_Pressed, this, &AFleetEnvironment::ToggleDayNightCycle);
@@ -180,6 +206,11 @@ void AFleetEnvironment::LaunchPhysics()
 	bool bValid = false;
 	PhysicsAddress->SetIp(TEXT("127.0.0.1"), bValid);
 	PhysicsAddress->SetPort(9001);
+	if (ProbeExistingPhysics())
+	{
+		UE_LOG(LogTemp, Display, TEXT("MMG physics already listening on 127.0.0.1:9001. Not spawning a second process."));
+		return;
+	}
 
 	const FString Script = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("scripts/mmg_physics.py"));
 	const FString LogFile = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("logs/mmg_physics.log"));
@@ -187,6 +218,38 @@ void AFleetEnvironment::LaunchPhysics()
 	PhysicsHandle = FPlatformProcess::CreateProc(TEXT("/bin/bash"), *Args, false, true, true, &PhysicsPid, 0, nullptr, nullptr);
 	FPlatformProcess::Sleep(0.25f);
 	UE_LOG(LogTemp, Display, TEXT("MMG physics process %u, script %s"), PhysicsPid, *Script);
+}
+
+bool AFleetEnvironment::ProbeExistingPhysics()
+{
+	if (!PhysicsSocket || !PhysicsAddress)
+	{
+		return false;
+	}
+	uint8 Packet[44];
+	FMemory::Memzero(Packet, sizeof(Packet));
+	Packet[0] = 'M';
+	Packet[1] = 'M';
+	Packet[2] = 'G';
+	Packet[3] = '1';
+	const uint32 Seq = 1;
+	const uint32 Count = 0;
+	FMemory::Memcpy(Packet + 4, &Seq, 4);
+	FMemory::Memcpy(Packet + 8, &Count, 4);
+	int32 Sent = 0;
+	PhysicsSocket->SendTo(Packet, sizeof(Packet), Sent, *PhysicsAddress);
+	if (!PhysicsSocket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromMilliseconds(80)))
+	{
+		return false;
+	}
+	uint8 Reply[256];
+	int32 Read = 0;
+	TSharedRef<FInternetAddr> From = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
+	if (!PhysicsSocket->RecvFrom(Reply, sizeof(Reply), Read, *From) || Read < 4)
+	{
+		return false;
+	}
+	return FMemory::Memcmp(Reply, "RMG1", 4) == 0;
 }
 
 void AFleetEnvironment::Tick(float DeltaSeconds)
@@ -238,7 +301,41 @@ void AFleetEnvironment::Tick(float DeltaSeconds)
 			TrackVoyage(Step);
 		}
 	}
+	const float TargetWave = bPhysicsAck ? AppliedWaveM : WaveM;
+	SmoothedWaveM = FMath::FInterpTo(SmoothedWaveM, TargetWave, FMath::Clamp(RealDt, 0.f, 0.25f), 1.4f);
+	if (bRestoreLitView)
+	{
+		LitRestoreFrames = 3;
+		bRestoreLitView = false;
+	}
+	if (LitRestoreFrames > 0 && GEngine)
+	{
+		GEngine->Exec(GetWorld(), TEXT("viewmode lit"));
+		if (LitRestoreFrames == 3)
+		{
+			UE_LOG(LogTemp, Display, TEXT("VISUAL SEA viewport kept lit"));
+		}
+		--LitRestoreFrames;
+	}
 	UpdateVisualSea();
+	if (bPerfLog && RealDt > 0.f)
+	{
+		PerfAccum += RealDt;
+		++PerfFrames;
+		if (PerfAccum >= 1.f)
+		{
+			UE_LOG(LogTemp, Display, TEXT("PERF fps %.2f frame_ms %.2f"), PerfFrames / PerfAccum, 1000.f * PerfAccum / PerfFrames);
+			PerfAccum = 0.f;
+			PerfFrames = 0;
+			++PerfSeconds;
+		}
+		if (!bProfileRequested && PerfSeconds >= 40 && GEngine)
+		{
+			bProfileRequested = true;
+			GEngine->Exec(GetWorld(), TEXT("ProfileGPU"));
+			UE_LOG(LogTemp, Display, TEXT("PERF ProfileGPU requested"));
+		}
+	}
 }
 
 namespace
@@ -517,6 +614,34 @@ void AFleetEnvironment::NudgeWaveDirection(float DeltaDeg)
 	MarkCustom();
 }
 
+void AFleetEnvironment::SetWavePeriod(float Seconds)
+{
+	if (!FMath::IsFinite(Seconds))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("VISUAL PERIOD rejected a non-finite value. Physics wave height stays %.2f m"), WaveM);
+		return;
+	}
+	WavePeriodS = FMath::Clamp(Seconds, 4.f, 18.f);
+	UE_LOG(LogTemp, Display, TEXT("VISUAL PERIOD %.2f s scale %.2f. Physics wave height stays %.2f m. Physical period stays the 90 m deep-water period."),
+		WavePeriodS, 8.f / WavePeriodS, WaveM);
+}
+
+void AFleetEnvironment::NudgeWavePeriod(float DeltaSeconds)
+{
+	SetWavePeriod(WavePeriodS + DeltaSeconds);
+}
+
+void AFleetEnvironment::SetAtmosphere(int32 Index)
+{
+	const float WindBefore = WindMs;
+	const float CurrentBefore = CurrentMs;
+	const float WaveBefore = WaveM;
+	Atmosphere = FMath::Clamp(Index, 0, 3);
+	ApplySun();
+	UE_LOG(LogTemp, Display, TEXT("ATMOSPHERE %s visual. Physics wind %.2f m/s current %.2f m/s waves %.2f m unchanged."),
+		*AtmosphereName, WindBefore, CurrentBefore, WaveBefore);
+}
+
 void AFleetEnvironment::NudgeHour(float DeltaHours)
 {
 	Hour = FMath::Fmod(Hour + DeltaHours + 24.f, 24.f);
@@ -548,12 +673,13 @@ namespace
 		float FoamBoost;
 		float MinAmplitudeCm;
 		float MaxAmplitudeCm;
+		float VisualGain;
 	};
 
 	const FVisualSea VisualSeas[] = {
-		{ TEXT("calm visual"), 8, 2200.f, 16000.f, 28.f, 0.22f, 0.12f, 0.12f, 0.11f, 0.28f, 0.5f, 8.f, 28.f },
-		{ TEXT("moderate visual"), 12, 900.f, 11000.f, 58.f, 0.48f, 0.26f, 0.28f, 0.05f, 0.85f, 1.2f, 14.f, 72.f },
-		{ TEXT("rough visual"), 14, 1100.f, 15000.f, 80.f, 0.62f, 0.34f, 0.36f, 0.04f, 1.25f, 1.55f, 22.f, 130.f }
+		{ TEXT("calm visual"), 8, 2200.f, 16000.f, 28.f, 0.22f, 0.12f, 0.12f, 0.11f, 0.28f, 0.5f, 8.f, 28.f, 0.75f },
+		{ TEXT("moderate visual"), 12, 900.f, 11000.f, 58.f, 0.48f, 0.26f, 0.28f, 0.05f, 0.85f, 1.2f, 14.f, 72.f, 1.f },
+		{ TEXT("rough visual"), 14, 1100.f, 15000.f, 80.f, 0.62f, 0.34f, 0.36f, 0.04f, 1.25f, 1.55f, 22.f, 130.f, 1.25f }
 	};
 }
 
@@ -562,6 +688,10 @@ void AFleetEnvironment::SetVisualSea(int32 Index)
 	VisualSea = FMath::Clamp(Index, 0, UE_ARRAY_COUNT(VisualSeas) - 1);
 	VisualSeaName = VisualSeas[VisualSea].Name;
 	UE_LOG(LogTemp, Display, TEXT("VISUAL SEA %s. Physics wave height stays %.2f m"), *VisualSeaName, WaveM);
+	if (Index == 0)
+	{
+		bRestoreLitView = true;
+	}
 	ApplySeaToWorld();
 }
 
@@ -716,17 +846,135 @@ void AFleetEnvironment::ApplySun()
 				Light->SetLightColor(SunColor);
 			}
 		}
+		const FAtmosphere& Atmo = Atmospheres[FMath::Clamp(Atmosphere, 0, UE_ARRAY_COUNT(Atmospheres) - 1)];
+		AtmosphereName = Atmo.Name;
+		bRaining = Atmo.Rain > 0.5f;
 		for (TActorIterator<ASkyLight> It(World); It; ++It)
 		{
 			if (USkyLightComponent* Sky = It->GetLightComponent())
 			{
-				Sky->SetIntensity(FMath::Max(0.15f, SunLux / 12.f));
+				Sky->SetIntensity(FMath::Max(0.15f, SunLux / 12.f) * Atmo.SkyMul);
+			}
+		}
+		if (Atmosphere > 0)
+		{
+			for (TActorIterator<AExponentialHeightFog> It(World); It; ++It)
+			{
+				if (UExponentialHeightFogComponent* Fog = It->GetComponent())
+				{
+					Fog->SetFogDensity(Atmo.Fog);
+				}
 			}
 		}
 	}
 	if (GEngine)
 	{
-		GEngine->Exec(GetWorld(), *FString::Printf(TEXT("r.EyeAdaptation.ExposureCompensation %f"), ExposureBias));
+		const FAtmosphere& Atmo = Atmospheres[FMath::Clamp(Atmosphere, 0, UE_ARRAY_COUNT(Atmospheres) - 1)];
+		GEngine->Exec(GetWorld(), *FString::Printf(TEXT("r.EyeAdaptation.ExposureCompensation %f"), ExposureBias + Atmo.ExposureAdd));
+	}
+}
+
+void AFleetEnvironment::ApplyMatchedReply(const uint8* Data, int32 Size)
+{
+	if (!bPhysicsConnected)
+	{
+		UE_LOG(LogTemp, Display, TEXT("MMG physics connected"));
+	}
+	bPhysicsConnected = true;
+	bLoggedDisconnect = false;
+	MissedReplies = 0;
+	bCommandRejected = false;
+	uint32 ReplyCount = 0;
+	FMemory::Memcpy(&ReplyCount, Data + 8, 4);
+	const int32 Stride = 4 + 9 * 4;
+	const int32 AckOffset = 12 + static_cast<int32>(FMath::Min(ReplyCount, 8u)) * Stride;
+	if (AckOffset + 4 <= Size && FMemory::Memcmp(Data + AckOffset, "REJ1", 4) == 0)
+	{
+		bCommandRejected = true;
+		bPhysicsAck = false;
+		UE_LOG(LogTemp, Warning, TEXT("MMG rejected a non-finite environment packet"));
+		return;
+	}
+	if (AckOffset + 28 <= Size && FMemory::Memcmp(Data + AckOffset, "ACK1", 4) == 0)
+	{
+		float Applied[6];
+		FMemory::Memcpy(Applied, Data + AckOffset + 4, sizeof(Applied));
+		const bool bChanged = !bPhysicsAck
+			|| !FMath::IsNearlyEqual(AppliedWindMs, Applied[0] / 100.f, 0.01f)
+			|| !FMath::IsNearlyEqual(AppliedCurrentMs, Applied[2] / 100.f, 0.01f)
+			|| !FMath::IsNearlyEqual(AppliedWaveM, Applied[4] / 100.f, 0.01f)
+			|| !FMath::IsNearlyEqual(AppliedWindDeg, Applied[1], 0.5f)
+			|| !FMath::IsNearlyEqual(AppliedCurrentDeg, Applied[3], 0.5f)
+			|| !FMath::IsNearlyEqual(AppliedWaveDeg, Applied[5], 0.5f);
+		AppliedWindMs = Applied[0] / 100.f;
+		AppliedWindDeg = Applied[1];
+		AppliedCurrentMs = Applied[2] / 100.f;
+		AppliedCurrentDeg = Applied[3];
+		AppliedWaveM = Applied[4] / 100.f;
+		AppliedWaveDeg = Applied[5];
+		bPhysicsAck = true;
+		if (bChanged)
+		{
+			UE_LOG(LogTemp, Display, TEXT("MMG APPLIED wind %.2f m/s at %.0f, current %.2f m/s at %.0f, waves %.2f m at %.0f, sim %.1f s"),
+				AppliedWindMs, AppliedWindDeg, AppliedCurrentMs, AppliedCurrentDeg, AppliedWaveM, AppliedWaveDeg, SimTime);
+		}
+	}
+	TArray<AFleetShip*> Ships;
+	for (TActorIterator<AFleetShip> It(GetWorld()); It; ++It)
+	{
+		Ships.Add(*It);
+	}
+	for (uint32 Index = 0; Index < ReplyCount && Index < static_cast<uint32>(Ships.Num()); ++Index)
+	{
+		const int32 Offset = 12 + static_cast<int32>(Index) * Stride;
+		if (Offset + Stride > Size)
+		{
+			break;
+		}
+		float Values[9];
+		FMemory::Memcpy(Values, Data + Offset + 4, sizeof(Values));
+		Ships[Index]->ApplyMotion(OutstandingDt, Values[0], Values[1], Values[2], Values[3], Values[4], Values[5], Values[6], Values[7]);
+	}
+}
+
+void AFleetEnvironment::DrainPhysicsReplies()
+{
+	if (!PhysicsSocket)
+	{
+		return;
+	}
+	uint8 Reply[2048];
+	TSharedRef<FInternetAddr> From = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
+	int32 Read = 0;
+	while (PhysicsSocket->RecvFrom(Reply, sizeof(Reply), Read, *From))
+	{
+		if (Read < 12 || FMemory::Memcmp(Reply, "RMG1", 4) != 0)
+		{
+			++InvalidPackets;
+			if (InvalidPackets <= 5)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("MMG invalid packet, %d bytes"), Read);
+			}
+			continue;
+		}
+		uint32 ReplySeq = 0;
+		FMemory::Memcpy(&ReplySeq, Reply + 4, 4);
+		if (!bOutstanding || ReplySeq != OutstandingSeq)
+		{
+			++StaleReplies;
+			if (StaleReplies <= 5)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("MMG stale reply seq %u, outstanding %u. Not applied."), ReplySeq, bOutstanding ? OutstandingSeq : 0);
+			}
+			continue;
+		}
+		const uint32 AppliedSeq = OutstandingSeq;
+		ApplyMatchedReply(Reply, Read);
+		if (bOutstanding && OutstandingSeq == AppliedSeq)
+		{
+			bOutstanding = false;
+			OutstandingFrames = 0;
+		}
 	}
 }
 
@@ -736,11 +984,30 @@ void AFleetEnvironment::ExchangePhysics(float DeltaSeconds)
 	{
 		return;
 	}
+	DrainPhysicsReplies();
+	for (TActorIterator<AFleetShip> Autopilot(GetWorld()); Autopilot; ++Autopilot)
+	{
+		Autopilot->UpdateAutopilot(DeltaSeconds);
+	}
+	if (bOutstanding)
+	{
+		++OutstandingFrames;
+		if (OutstandingFrames < 20)
+		{
+			return;
+		}
+		++TimeoutCount;
+		UE_LOG(LogTemp, Warning, TEXT("MMG timeout waiting for seq %u after %d frames. That reply will not be applied."), OutstandingSeq, OutstandingFrames);
+		bOutstanding = false;
+		OutstandingFrames = 0;
+		bPhysicsConnected = false;
+		bLoggedDisconnect = true;
+		++MissedReplies;
+	}
 
 	TArray<AFleetShip*> Ships;
 	for (TActorIterator<AFleetShip> It(GetWorld()); It; ++It)
 	{
-		It->UpdateAutopilot(DeltaSeconds);
 		Ships.Add(*It);
 	}
 	if (Ships.Num() == 0)
@@ -791,96 +1058,13 @@ void AFleetEnvironment::ExchangePhysics(float DeltaSeconds)
 
 	int32 Sent = 0;
 	PhysicsSocket->SendTo(Packet.GetData(), Packet.Num(), Sent, *PhysicsAddress);
-	const bool bReadable = PhysicsSocket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromMilliseconds(15));
-	uint8 Reply[2048];
-	uint8 Matched[2048];
-	int32 MatchedRead = 0;
-	bool bMatched = false;
-	if (bReadable)
+	bOutstanding = true;
+	OutstandingSeq = Seq;
+	OutstandingDt = DeltaSeconds;
+	OutstandingFrames = 0;
+	if (PhysicsSocket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromMilliseconds(2)))
 	{
-		TSharedRef<FInternetAddr> From = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
-		int32 Read = 0;
-		while (PhysicsSocket->RecvFrom(Reply, sizeof(Reply), Read, *From))
-		{
-			if (Read < 12 || FMemory::Memcmp(Reply, "RMG1", 4) != 0)
-			{
-				continue;
-			}
-			uint32 ReplySeq = 0;
-			FMemory::Memcpy(&ReplySeq, Reply + 4, 4);
-			if (ReplySeq == Seq)
-			{
-				FMemory::Memcpy(Matched, Reply, Read);
-				MatchedRead = Read;
-				bMatched = true;
-			}
-		}
-	}
-	if (!bMatched)
-	{
-		++MissedReplies;
-		if (MissedReplies == 45 && !bLoggedDisconnect)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("MMG physics has not answered yet"));
-			bLoggedDisconnect = true;
-			bPhysicsConnected = false;
-		}
-		return;
-	}
-
-	if (!bPhysicsConnected)
-	{
-		UE_LOG(LogTemp, Display, TEXT("MMG physics connected"));
-	}
-	bPhysicsConnected = true;
-	bLoggedDisconnect = false;
-	MissedReplies = 0;
-	bCommandRejected = false;
-	uint32 ReplyCount = 0;
-	FMemory::Memcpy(&ReplyCount, Matched + 8, 4);
-	const int32 Stride = 4 + 9 * 4;
-	const int32 AckOffset = 12 + static_cast<int32>(FMath::Min(ReplyCount, 8u)) * Stride;
-	if (AckOffset + 4 <= MatchedRead && FMemory::Memcmp(Matched + AckOffset, "REJ1", 4) == 0)
-	{
-		bCommandRejected = true;
-		bPhysicsAck = false;
-		UE_LOG(LogTemp, Warning, TEXT("MMG rejected a non-finite environment packet"));
-		return;
-	}
-	if (AckOffset + 28 <= MatchedRead && FMemory::Memcmp(Matched + AckOffset, "ACK1", 4) == 0)
-	{
-		float Applied[6];
-		FMemory::Memcpy(Applied, Matched + AckOffset + 4, sizeof(Applied));
-		const bool bChanged = !bPhysicsAck
-			|| !FMath::IsNearlyEqual(AppliedWindMs, Applied[0] / 100.f, 0.01f)
-			|| !FMath::IsNearlyEqual(AppliedCurrentMs, Applied[2] / 100.f, 0.01f)
-			|| !FMath::IsNearlyEqual(AppliedWaveM, Applied[4] / 100.f, 0.01f)
-			|| !FMath::IsNearlyEqual(AppliedWindDeg, Applied[1], 0.5f)
-			|| !FMath::IsNearlyEqual(AppliedCurrentDeg, Applied[3], 0.5f)
-			|| !FMath::IsNearlyEqual(AppliedWaveDeg, Applied[5], 0.5f);
-		AppliedWindMs = Applied[0] / 100.f;
-		AppliedWindDeg = Applied[1];
-		AppliedCurrentMs = Applied[2] / 100.f;
-		AppliedCurrentDeg = Applied[3];
-		AppliedWaveM = Applied[4] / 100.f;
-		AppliedWaveDeg = Applied[5];
-		bPhysicsAck = true;
-		if (bChanged)
-		{
-			UE_LOG(LogTemp, Display, TEXT("MMG APPLIED wind %.2f m/s at %.0f, current %.2f m/s at %.0f, waves %.2f m at %.0f, sim %.1f s"),
-				AppliedWindMs, AppliedWindDeg, AppliedCurrentMs, AppliedCurrentDeg, AppliedWaveM, AppliedWaveDeg, SimTime);
-		}
-	}
-	for (uint32 Index = 0; Index < ReplyCount && Index < static_cast<uint32>(Ships.Num()); ++Index)
-	{
-		const int32 Offset = 12 + static_cast<int32>(Index) * Stride;
-		if (Offset + Stride > MatchedRead)
-		{
-			break;
-		}
-		float Values[9];
-		FMemory::Memcpy(Values, Matched + Offset + 4, sizeof(Values));
-		Ships[Index]->ApplyMotion(DeltaSeconds, Values[0], Values[1], Values[2], Values[3], Values[4], Values[5], Values[6], Values[7]);
+		DrainPhysicsReplies();
 	}
 }
 
@@ -893,7 +1077,7 @@ void AFleetEnvironment::LogControlShip(const TCHAR* Label) const
 			continue;
 		}
 		const FVector Place = It->GetActorLocation();
-		UE_LOG(LogTemp, Display, TEXT("CONTROL SHIP %s kn %.1f heading %.1f pos %.0f %.0f m heave %+.2f m leeway %+.1f deg sim %.2f s"),
+		UE_LOG(LogTemp, Display, TEXT("CONTROL SHIP %s surge_kn %.1f heading %.1f pos %.0f %.0f m heave %+.2f m leeway %+.1f deg sim %.2f s"),
 			Label, It->GetSpeedKnots(), It->GetHeadingDegrees(), Place.X / 100.f, Place.Y / 100.f,
 			It->GetHeaveMeters(), It->GetLeewayDegrees(), SimTime);
 	}
@@ -960,7 +1144,7 @@ void AFleetEnvironment::RunControlDemo(float RealDt)
 
 void AFleetEnvironment::BuildVisualSea()
 {
-	const int32 Resolution = FMath::Clamp(VisualSeaResolution, 24, 140);
+	const int32 Resolution = FMath::Clamp(VisualSeaResolution, 24, 200);
 	VisualSeaResolution = Resolution;
 	const int32 Count = Resolution + 1;
 	VisualSeaXY.SetNum(Count * Count);
@@ -1010,10 +1194,17 @@ void AFleetEnvironment::BuildVisualSea()
 	SetRootComponent(VisualSeaMesh);
 	if (UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial")))
 	{
-		UMaterialInstanceDynamic* SeaMaterial = UMaterialInstanceDynamic::Create(Base, this);
-		SeaMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.014f, 0.062f, 0.098f));
-		SeaMaterial->SetScalarParameterValue(TEXT("Roughness"), 0.58f);
-		VisualSeaMesh->SetMaterial(0, SeaMaterial);
+		VisualSeaMaterial = UMaterialInstanceDynamic::Create(Base, this);
+		// Same dark blue as before. Sun lux and exposure still come from the weather preset.
+		VisualSeaMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.014f, 0.062f, 0.098f));
+		VisualSeaMaterial->SetScalarParameterValue(TEXT("Roughness"), 0.12f);
+		VisualSeaMesh->SetMaterial(0, VisualSeaMaterial);
+		float RoughOut = 0.f;
+		float SpecOut = 0.f;
+		const bool bRough = Base->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Roughness")), RoughOut);
+		const bool bSpec = Base->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Specular")), SpecOut);
+		UE_LOG(LogTemp, Display, TEXT("VISUAL SURFACE material /Engine/BasicShapes/BasicShapeMaterial default lit opaque. Roughness parameter %d, Specular parameter %d. This mesh does not use the hidden Water material."),
+			bRough ? 1 : 0, bSpec ? 1 : 0);
 	}
 
 	if (UWorld* World = GetWorld())
@@ -1021,16 +1212,23 @@ void AFleetEnvironment::BuildVisualSea()
 		TActorIterator<AWaterZone> ZoneIt(World);
 		if (AWaterZone* Zone = ZoneIt ? *ZoneIt : nullptr)
 		{
+			Zone->SetActorTickEnabled(false);
 			if (UWaterMeshComponent* WaterMesh = Zone->GetWaterMeshComponent())
 			{
 				WaterMesh->SetVisibility(false);
 				WaterMesh->SetHiddenInGame(true);
+				WaterMesh->SetComponentTickEnabled(false);
 			}
 		}
 		TActorIterator<AWaterBodyOcean> OceanIt(World);
 		if (AWaterBodyOcean* Ocean = OceanIt ? *OceanIt : nullptr)
 		{
 			Ocean->SetActorHiddenInGame(true);
+			Ocean->SetActorTickEnabled(false);
+			if (UWaterBodyComponent* HiddenBody = Ocean->GetWaterBodyComponent())
+			{
+				HiddenBody->SetComponentTickEnabled(false);
+			}
 		}
 	}
 
@@ -1069,10 +1267,13 @@ void AFleetEnvironment::UpdateVisualSea()
 	}
 	VisualSeaMesh->SetWorldLocation(FVector(Center.X, Center.Y, 0.f));
 
-	VisualSeaVertices.SetNum(VisualSeaXY.Num());
-	VisualSeaNormals.SetNum(VisualSeaXY.Num());
-	VisualSeaUV.SetNum(VisualSeaXY.Num());
-	VisualSeaColors.SetNum(VisualSeaXY.Num());
+	if (VisualSeaVertices.Num() != VisualSeaXY.Num())
+	{
+		VisualSeaVertices.SetNum(VisualSeaXY.Num());
+		VisualSeaNormals.SetNum(VisualSeaXY.Num());
+		VisualSeaUV.SetNum(VisualSeaXY.Num());
+		VisualSeaColors.SetNum(VisualSeaXY.Num());
+	}
 	struct FSeaWave
 	{
 		float Amplitude;
@@ -1081,14 +1282,67 @@ void AFleetEnvironment::UpdateVisualSea()
 		float Omega;
 		float Phase;
 	};
-	const float Swell = Sea.MaxAmplitudeCm;
+	const float WaveGain = FMath::Clamp(SmoothedWaveM / 4.f, 0.f, 1.f);
+	// 0.4 m stays near a 1 m crest. 2.8 m reaches a few metres, beside the 6–8 m freeboard, without a spike.
+	const float SwellCm = FMath::Lerp(26.f, 240.f, WaveGain) * Sea.VisualGain;
+	const float PrimaryCm = SwellCm * 2.3f;
+	const float PeriodScale = 8.f / FMath::Clamp(WavePeriodS, 4.f, 18.f);
+	if (FMath::Abs(PrimaryCm - LastLoggedSwellCm) >= 20.f)
+	{
+		LastLoggedSwellCm = PrimaryCm;
+		UE_LOG(LogTemp, Display, TEXT("VISUAL SWELL smoothed %.2f m acknowledged %.2f m amplitude %.0f cm %s toward %.0f deg, wavelengths 180/150/240 m. Physics wave height stays %.2f m"),
+			SmoothedWaveM, AppliedWaveM, PrimaryCm, *VisualSeaName, WaveDeg, WaveM);
+	}
+	float Roughness = FMath::Lerp(0.08f, 0.40f, WaveGain);
+	if (SeaIndex == 0)
+	{
+		Roughness -= 0.03f;
+	}
+	else if (SeaIndex == 2)
+	{
+		Roughness += 0.08f;
+	}
+	Roughness = FMath::Clamp(Roughness, 0.05f, 0.62f);
+	if (VisualSeaMaterial && FMath::Abs(Roughness - LastAppliedRoughness) >= 0.02f)
+	{
+		LastAppliedRoughness = Roughness;
+		VisualSeaMaterial->SetScalarParameterValue(TEXT("Roughness"), Roughness);
+		float SpecOut = 0.f;
+		const bool bSpec = VisualSeaMaterial->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Specular")), SpecOut);
+		UE_LOG(LogTemp, Display, TEXT("VISUAL SURFACE BasicShapeMaterial roughness %.2f color 0.014 0.062 0.098. Specular parameter %s. Physics wave height stays %.2f m"),
+			Roughness, bSpec ? TEXT("present") : TEXT("absent, engine default 0.5"), WaveM);
+	}
+	const float HeadingRad = FMath::DegreesToRadians(WaveDeg);
+	const float DirX = FMath::Cos(HeadingRad);
+	const float DirY = FMath::Sin(HeadingRad);
+	const float SideX = -DirY;
+	const float SideY = DirX;
+	const float Spread = FMath::DegreesToRadians(32.f);
+	const float CosSpread = FMath::Cos(Spread);
+	const float SinSpread = FMath::Sin(Spread);
+	const float Dir2X = DirX * CosSpread + SideX * SinSpread;
+	const float Dir2Y = DirY * CosSpread + SideY * SinSpread;
+	const float Dir3X = DirX * CosSpread - SideX * SinSpread;
+	const float Dir3Y = DirY * CosSpread - SideY * SinSpread;
+	auto WaveK = [](float WavelengthCm) { return 2.f * PI / FMath::Max(WavelengthCm, 1000.f); };
+	auto WaveOmega = [](float K) { return FMath::Sqrt(981.f * K); };
+	const float K1 = WaveK(18000.f);
+	const float K2 = WaveK(15000.f);
+	const float K3 = WaveK(24000.f);
 	const FSeaWave Waves[] = {
-		{ Swell * 2.8f, 0.00039f, 0.00008f, 0.46f, 0.3f },
-		{ Swell * 1.4f, -0.00016f, 0.00052f, 0.62f, 1.4f },
-		{ Swell * 0.85f, 0.00071f, 0.00022f, 0.88f, 0.8f },
-		{ Swell * 0.45f, -0.00028f, 0.00084f, 1.12f, 2.1f },
-		{ Sea.MinAmplitudeCm * 3.2f, 0.00058f, -0.00047f, 0.77f, 1.6f }
+		{ PrimaryCm, K1 * DirX, K1 * DirY, WaveOmega(K1), 0.4f },
+		{ SwellCm * 1.15f, K2 * Dir2X, K2 * Dir2Y, WaveOmega(K2), 1.7f },
+		{ SwellCm * 0.72f, K3 * Dir3X, K3 * Dir3Y, WaveOmega(K3), 0.9f }
 	};
+	const float ChopCm = FMath::Lerp(8.f, 48.f, WaveGain);
+	const float Kr1 = WaveK(7800.f);
+	const float Kr2 = WaveK(10400.f);
+	const FSeaWave Ripples[] = {
+		{ ChopCm, Kr1 * DirX, Kr1 * DirY, WaveOmega(Kr1), 0.6f },
+		{ ChopCm * 0.62f, Kr2 * SideX, Kr2 * SideY, WaveOmega(Kr2), 2.0f }
+	};
+	const float NormalShade = FMath::Lerp(1.7f, 3.4f, WaveGain);
+	const float CrestLean = FMath::Lerp(0.10f, 0.26f, WaveGain);
 	const float RimCm = 185000.f;
 	const float EdgeCm = 220000.f;
 	for (int32 Index = 0; Index < VisualSeaXY.Num(); ++Index)
@@ -1103,35 +1357,38 @@ void AFleetEnvironment::UpdateVisualSea()
 		float Height = 0.f;
 		float SlopeX = 0.f;
 		float SlopeY = 0.f;
+		float ShiftX = 0.f;
+		float ShiftY = 0.f;
 		for (const FSeaWave& Wave : Waves)
 		{
-			const float Angle = WorldX * Wave.Kx + WorldY * Wave.Ky + Time * Wave.Omega + Wave.Phase;
+			const float Angle = WorldX * Wave.Kx + WorldY * Wave.Ky - Time * Wave.Omega * PeriodScale + Wave.Phase;
 			const float Sine = FMath::Sin(Angle);
 			const float Cosine = FMath::Cos(Angle);
 			Height += Wave.Amplitude * Sine;
 			SlopeX += Wave.Amplitude * Wave.Kx * Cosine;
 			SlopeY += Wave.Amplitude * Wave.Ky * Cosine;
+			const float WaveNumber = FMath::Max(FMath::Sqrt(Wave.Kx * Wave.Kx + Wave.Ky * Wave.Ky), 0.00001f);
+			const float Lean = CrestLean * Wave.Amplitude * Cosine;
+			ShiftX += Lean * Wave.Kx / WaveNumber;
+			ShiftY += Lean * Wave.Ky / WaveNumber;
 		}
 		Height *= Fade;
 		SlopeX *= Fade;
 		SlopeY *= Fade;
+		ShiftX *= Fade;
+		ShiftY *= Fade;
 		// Shading only. These slopes are not added to the height, so swell shape and speed stay put.
-		const FSeaWave Ripples[] = {
-			{ Sea.MinAmplitudeCm * 1.6f, 0.00022f, 0.00055f, 0.54f, 0.6f },
-			{ Sea.MinAmplitudeCm * 1.05f, -0.00041f, 0.00017f, 0.81f, 2.0f }
-		};
 		for (const FSeaWave& Ripple : Ripples)
 		{
-			const float Angle = WorldX * Ripple.Kx + WorldY * Ripple.Ky + Time * Ripple.Omega + Ripple.Phase;
+			const float Angle = WorldX * Ripple.Kx + WorldY * Ripple.Ky - Time * Ripple.Omega * PeriodScale + Ripple.Phase;
 			const float Cosine = FMath::Cos(Angle);
 			SlopeX += Ripple.Amplitude * Ripple.Kx * Cosine * Fade;
 			SlopeY += Ripple.Amplitude * Ripple.Ky * Cosine * Fade;
 		}
-		VisualSeaVertices[Index] = FVector(X, Y, Height);
+		VisualSeaVertices[Index] = FVector(X + ShiftX, Y + ShiftY, Height);
 		VisualSeaUV[Index] = FVector2D(WorldX * 0.00005f, WorldY * 0.00005f);
-		const float Shade = 1.65f;
-		VisualSeaNormals[Index] = FVector(-SlopeX * Shade, -SlopeY * Shade, 1.f).GetSafeNormal();
-		const float Crest = FMath::Clamp(Height / FMath::Max(Swell * 2.4f, 1.f), 0.f, 1.f);
+		VisualSeaNormals[Index] = FVector(-SlopeX * NormalShade, -SlopeY * NormalShade, 1.f).GetSafeNormal();
+		const float Crest = FMath::Pow(FMath::Clamp(Height / FMath::Max(PrimaryCm * 2.2f, 1.f), 0.f, 1.f), 1.45f);
 		const float Facing = FMath::Clamp(0.5f + SlopeX * 0.004f + SlopeY * 0.003f, 0.f, 1.f);
 		VisualSeaColors[Index] = FColor(
 			static_cast<uint8>(FMath::Clamp(4.f + Crest * 160.f + Facing * 24.f, 0.f, 255.f)),

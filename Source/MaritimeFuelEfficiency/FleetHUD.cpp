@@ -25,6 +25,24 @@ namespace
 	{
 		return FMath::Fmod(Degrees + 360.f, 360.f);
 	}
+
+	FString KnotField(const TCHAR* Label, bool bValid, float Knots)
+	{
+		if (!bValid)
+		{
+			return FString::Printf(TEXT("%s N/A"), Label);
+		}
+		return FString::Printf(TEXT("%s %4.1f kn"), Label, Knots);
+	}
+
+	FString AngleField(const TCHAR* Label, bool bValid, float Degrees)
+	{
+		if (!bValid || !FMath::IsFinite(Degrees))
+		{
+			return FString::Printf(TEXT("%s N/A"), Label);
+		}
+		return FString::Printf(TEXT("%s %05.1f"), Label, Heading360(Degrees));
+	}
 }
 
 void AFleetHUD::DrawWorldLine(const FVector& Start, const FVector& End, const FLinearColor& Color)
@@ -83,6 +101,12 @@ void AFleetHUD::NotifyHitBoxClick(FName BoxName)
 	else if (BoxName == TEXT("Time20")) Environment->SetTimeScale(20.f);
 	else if (BoxName == TEXT("Pause")) Environment->TogglePause();
 	else if (BoxName == TEXT("Reset")) Environment->ResetSimulation();
+	else if (BoxName == TEXT("PeriodDn")) Environment->NudgeWavePeriod(-2.f);
+	else if (BoxName == TEXT("PeriodUp")) Environment->NudgeWavePeriod(2.f);
+	else if (BoxName == TEXT("SkyClear")) Environment->SetAtmosphere(1);
+	else if (BoxName == TEXT("SkyCloud")) Environment->SetAtmosphere(2);
+	else if (BoxName == TEXT("SkyRain")) Environment->SetAtmosphere(3);
+	else if (BoxName == TEXT("SkySeason")) Environment->SetAtmosphere(0);
 }
 
 void AFleetHUD::DrawHUD()
@@ -111,23 +135,25 @@ void AFleetHUD::DrawHUD()
 			Environment->IsPhysicsConnected() ? TEXT("MMG physics") : TEXT("physics waiting"));
 		DrawText(Title, FLinearColor(1.f, 0.92f, 0.45f), 16.f, Y, Font, 1.05f);
 		Y += 26.f;
-		const FString Sea = FString::Printf(TEXT("wind %.1f m/s at %.0f    current %.2f m/s at %.0f    waves %.1f m at %.0f    %s%s"),
+		const FString Sea = FString::Printf(TEXT("wind %.1f m/s at %.0f    current %.2f m/s at %.0f    waves %.1f m at %.0f    period %.0f s    %s    %s%s"),
 			Environment->GetWindSpeedMs(),
 			Environment->GetWindDirectionDeg(),
 			Environment->GetCurrentSpeedMs(),
 			Environment->GetCurrentDirectionDeg(),
 			Environment->GetWaveHeightM(),
 			Environment->GetWaveDirectionDeg(),
+			Environment->GetWavePeriodS(),
+			*Environment->GetAtmosphereName(),
 			*Environment->GetVisualSeaName(),
 			Environment->IsDayNightCycle() ? TEXT("    day/night cycle") : TEXT(""));
 		DrawText(Sea, FLinearColor::White, 16.f, Y, Font, Scale);
 		Y += 22.f;
-		DrawText(TEXT("1 5 0 2 time    Space pause    Enter run    Bksp reset    Z X C V seasons    arrows wind    I K J L current    U O Y H waves    T G hour    N cycle"), FLinearColor(0.75f, 0.82f, 0.9f), 16.f, Y, Font, 0.62f);
+		DrawText(TEXT("1 5 0 2 time    Space pause    Z X C V seasons    [ ] visual period    F8 clear  F10 cloud  F12 rain    F5 F6 F7 sea"), FLinearColor(0.75f, 0.82f, 0.9f), 16.f, Y, Font, 0.58f);
 		Y += 18.f;
 
 		const float PanelX = Canvas->SizeX - 348.f;
 		float PanelY = 12.f;
-		DrawRect(FLinearColor(0.02f, 0.04f, 0.07f, 0.82f), PanelX - 8.f, 8.f, 340.f, 470.f);
+		DrawRect(FLinearColor(0.02f, 0.04f, 0.07f, 0.82f), PanelX - 8.f, 8.f, 340.f, 560.f);
 		DrawText(TEXT("MMG CONTROLS"), FLinearColor(1.f, 0.92f, 0.45f), PanelX, PanelY, Font, 0.85f);
 		PanelY += 24.f;
 		DrawText(TEXT("Weather sets wind, current, and waves"), FLinearColor(0.7f, 0.78f, 0.86f), PanelX, PanelY, Font, 0.55f);
@@ -158,9 +184,19 @@ void AFleetHUD::DrawHUD()
 		DrawCommand(PanelX + 78.f, PanelY, 74.f, 22.f, TEXT("Wave +"), TEXT("WaveUp"));
 		DrawCommand(PanelX + 156.f, PanelY, 74.f, 22.f, TEXT("Dir -"), TEXT("WaveL"));
 		DrawCommand(PanelX + 234.f, PanelY, 74.f, 22.f, TEXT("Dir +"), TEXT("WaveR"));
-		PanelY += 24.f;
-		DrawText(TEXT("Period is fixed at 90 m wavelength"), FLinearColor(0.75f, 0.7f, 0.45f), PanelX, PanelY, Font, 0.52f);
-		PanelY += 18.f;
+		PanelY += 22.f;
+		DrawText(FString::Printf(TEXT("Visual period %.0f s    drawn speed only"), Environment->GetWavePeriodS()), FLinearColor(0.75f, 0.7f, 0.45f), PanelX, PanelY, Font, 0.52f);
+		PanelY += 16.f;
+		DrawCommand(PanelX, PanelY, 150.f, 22.f, TEXT("Period -"), TEXT("PeriodDn"));
+		DrawCommand(PanelX + 156.f, PanelY, 150.f, 22.f, TEXT("Period +"), TEXT("PeriodUp"));
+		PanelY += 26.f;
+		DrawText(FString::Printf(TEXT("Sky %s    not a wave force"), *Environment->GetAtmosphereName()), FLinearColor(0.75f, 0.82f, 0.9f), PanelX, PanelY, Font, 0.52f);
+		PanelY += 16.f;
+		DrawCommand(PanelX, PanelY, 74.f, 22.f, TEXT("Clear"), TEXT("SkyClear"));
+		DrawCommand(PanelX + 78.f, PanelY, 74.f, 22.f, TEXT("Cloudy"), TEXT("SkyCloud"));
+		DrawCommand(PanelX + 156.f, PanelY, 74.f, 22.f, TEXT("Rain"), TEXT("SkyRain"));
+		DrawCommand(PanelX + 234.f, PanelY, 74.f, 22.f, TEXT("Sky off"), TEXT("SkySeason"));
+		PanelY += 26.f;
 		DrawCommand(PanelX, PanelY, 48.f, 22.f, TEXT("1x"), TEXT("Time1"));
 		DrawCommand(PanelX + 52.f, PanelY, 48.f, 22.f, TEXT("5x"), TEXT("Time5"));
 		DrawCommand(PanelX + 104.f, PanelY, 48.f, 22.f, TEXT("10x"), TEXT("Time10"));
@@ -206,19 +242,42 @@ void AFleetHUD::DrawHUD()
 		}
 	}
 
+	if (Environment && Environment->IsRaining())
+	{
+		const float RainTime = Environment->GetSimTime();
+		for (int32 Drop = 0; Drop < 42; ++Drop)
+		{
+			const float X = FMath::Fmod(Drop * 41.f + RainTime * 35.f, Canvas->SizeX);
+			const float DropY = FMath::Fmod(Drop * 67.f + RainTime * 220.f, Canvas->SizeY);
+			DrawRect(FLinearColor(0.78f, 0.84f, 0.9f, 0.28f), X, DropY, 1.4f, 12.f);
+		}
+	}
+
 	Y += 30.f;
 	for (TActorIterator<AFleetShip> It(GetWorld()); It; ++It)
 	{
 		const AFleetShip* Ship = *It;
 		const FLinearColor Color = ShipColor(Ship->GetShipType());
 		const FVector Location = Ship->GetActorLocation();
+		const bool bFresh = Environment && Environment->IsPhysicsConnected() && Ship->HasMotionSample();
+		const bool bCurrent = bFresh && Environment->HasPhysicsAck() && FMath::IsFinite(Environment->GetAppliedCurrentMs()) && FMath::IsFinite(Environment->GetAppliedCurrentDirectionDeg());
+		const FFleetMotionReadout Motion = Ship->GetMotionReadout(
+			bFresh,
+			bCurrent,
+			bCurrent ? Environment->GetAppliedCurrentMs() : 0.f,
+			bCurrent ? Environment->GetAppliedCurrentDirectionDeg() : 0.f);
 		const FString Status = FString::Printf(
-			TEXT("%-16s  %5.1f kn   heading %05.1f   pos %6.0f m, %6.0f m"),
+			TEXT("%-16s  %s   pos %6.0f m, %6.0f m"),
 			*Ship->GetShipName(),
-			Ship->GetSpeedKnots(),
-			Heading360(Ship->GetHeadingDegrees()),
+			*AngleField(TEXT("heading"), FMath::IsFinite(Ship->GetHeadingDegrees()), Ship->GetHeadingDegrees()),
 			Location.X / 100.f,
 			Location.Y / 100.f);
+		const FString Speeds = FString::Printf(
+			TEXT("    %s   %s   %s   %s"),
+			*KnotField(TEXT("surge"), Motion.bSurgeValid, Motion.SurgeKn),
+			*KnotField(TEXT("STW"), Motion.bStwValid, Motion.StwKn),
+			*KnotField(TEXT("SOG"), Motion.bSogValid, Motion.SogKn),
+			*AngleField(TEXT("COG"), Motion.bCogValid, Motion.CogDeg));
 		const FString Passage = FString::Printf(
 			TEXT("    dest %5.0f m   fuel %4.2f t/h   leg %4.2f t   heave %+4.1f m   leeway %+4.1f deg   rudder %+5.1f deg"),
 			Ship->GetDistanceRemainingMeters(),
@@ -228,8 +287,10 @@ void AFleetHUD::DrawHUD()
 			Ship->GetLeewayDegrees(),
 			Ship->GetRudderDegrees());
 		DrawText(Status, Color, 16.f, Y, Font, Scale);
-		Y += 22.f;
+		Y += 20.f;
+		DrawText(Speeds, Color, 16.f, Y, Font, 0.82f);
+		Y += 20.f;
 		DrawText(Passage, Color, 16.f, Y, Font, 0.82f);
-		Y += 26.f;
+		Y += 24.f;
 	}
 }

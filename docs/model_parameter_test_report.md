@@ -2,9 +2,9 @@
 
 **Final status: PASS, with limitations**
 
-The active runtime model is the MMG ship step in `scripts/mmg_physics.py`, connected to the fleet session over UDP. There is no Gym environment, no SAC network, and no checkpoint. Numerical tests, the water test, and the live preset, pause, time-scale, reset, day/night, and visual-sea checks passed. The previously unverified panel clicks, spring and autumn presets, visual-sea keys, and frame-time sample were exercised on the running viewport. Section 12 records those steps and the measured values.
+The active runtime model is the MMG ship step in `scripts/mmg_physics.py`, connected to the fleet session over UDP. There is no Gym environment, no SAC network, and no checkpoint. Section 12 records the first live control pass. Section 13 records the later stability pass: the UDP reply is no longer discarded when it misses a 15 ms wait, the visible swell follows the acknowledged wave height, and F5 no longer leaves the shader-complexity view up.
 
-The drawn swell is still not driven by the physics wave height. That separation is intentional. Gym, SAC, and a checkpoint remain unimplemented. No training was started. `scripts/mmg_physics.py` and the three test modules were unchanged (SHA-256 matched before and after). No checkpoint file exists to overwrite.
+Gym, SAC, and a checkpoint remain unimplemented. No training was started. The MMG hydrodynamic functions were not edited. `serve()` only gained a bind guard so a second process does not take port 9001. No checkpoint file exists.
 
 ## 1. Project and engine
 
@@ -287,3 +287,48 @@ From this process, after startup:
 - No `REJ1`, no fatal, and no rendering device lost.
 
 **PASS** for the communication and rendering check, with those warnings left as engine noise.
+
+## 13. Stability and swell pass
+
+This pass started from the findings above. Evidence is in `/home/user/Desktop/Maritime_AI_Final_Verification/`. The fleet was launched once after the module rebuild. It found the existing physics process and did not start a second one.
+
+### Communication
+
+`ExchangePhysics` used to wait up to 15 ms on the game thread and accept only a reply whose sequence matched the request just sent. A reply that arrived after that wait was still in the socket. The next frame sent a newer sequence first, then discarded the late packet. Forty-five of those misses logged `MMG physics has not answered yet`.
+
+The exchange now keeps one outstanding request. A late reply is applied with the timestep that was sent, and only if its sequence still matches. After 20 frames the request is dropped and logged as `MMG timeout`; a later copy of that reply is logged as stale and is not applied. The same-frame wait is 2 ms. Invalid packets are logged separately.
+
+Live result from 12:23:46 through the control pass and the following soak: `MMG physics connected`, acknowledgements continued, and the log contains no `MMG timeout`, `MMG stale`, or `MMG invalid` line. **PASS** for this session. It is not a multi-hour soak.
+
+### Visible swell
+
+The mesh is still a summed sine approximation, not a physical free surface. Its base amplitude is `clamp(lerp(18 cm, 100 cm, acknowledged_metres / 4) * visual_gain, 12 cm, 130 cm)`. Visual gain is 0.75, 1.0, or 1.25 for calm, moderate, and rough. F5, F6, and F7 do not write `WaveM`. The value eases toward the latest acknowledgement.
+
+Observed moderate-visual amplitudes after the acknowledgement:
+
+| Preset | Acknowledged wave | Logged amplitude |
+|---|---|---|
+| Summer calm | 0.40 m | 26 cm |
+| Spring tide | 1.30 m | 43 cm, smoothed from 0.81 m to 1.20 m |
+| Autumn gale | 2.80 m | 68 cm while smoothing toward 2.80 m |
+| Winter storm | 4.00 m | 92 cm while smoothing toward 4.00 m |
+
+At 0.40 m, F5 logged 20 cm calm visual and F7 logged 33 cm rough visual. Neither line was followed by a new `MMG APPLIED`. **PASS.**
+
+### F5
+
+`Config/DefaultInput.ini` removes the engine `viewmode shadercomplexity` binding on F5. `SetVisualSea(0)` also requests `viewmode lit` for the next three frames, because this process had to be restarted for the input change. The F5 frame stayed in the lit view (`VISUAL SEA viewport kept lit`, no shader-complexity pixels). **PASS.**
+
+### Regression
+
+22 unit tests passed, including the original 19. Steady diameter 961.544 m. Advance 991.963 m. 1000 kW fuel 0.0486111111 kg/s, 175 kg/h. Self-test calm heave peak 0.40 m, gale 4.00 m. Training gate `entry_points=0`. Water test `WATER TEST PASS`.
+
+During the captured run the engine frame counter gave 17.71 fps (56.5 ms), 16.20 fps (61.7 ms), and 17.25 fps (58.0 ms). `nvidia-smi` read RTX 5060 Ti, 14% GPU, 1601 MiB, 2722 MHz, 32.03 W, 50 °C. That sample is not a GPU pass trace. The screen capture was running.
+
+## 14. Learning interface, period, and sky
+
+Evidence is in `/home/user/Desktop/Maritime_AI_Completion/`. The MMG step is still the only motion model. `MaritimeRoutingEnv` calls `integrate`. A NumPy Soft Actor-Critic smoke test updates, saves, and reloads a checkpoint. No long training run was started. Gymnasium and PyTorch are not installed.
+
+Visual period is clamped to 4–18 s and only scales the drawn swell. The physical period stays the 90 m deep-water value, about 7.60 s. Clear, cloudy, and rain change exposure, cloud, fog, and a rain overlay. They do not change wind, current, or wave height. The drawn sea is still not a resolved physical wave field.
+
+Focused frame time without capture settled near 30–34 ms. `ProfileGPU` reported a 4.33 ms GPU frame. The GPU is not the limiter.

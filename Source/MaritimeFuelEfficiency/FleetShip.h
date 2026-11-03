@@ -16,6 +16,21 @@ enum class EFleetShipType : uint8
 	Bulker
 };
 
+// Display speeds. Same rotation as ApplyMotion and scripts/route_telemetry.py:
+// ground velocity is body surge and sway rotated by heading. STW subtracts
+// the current vector once. COG is unset below 0.05 m/s. This does not move the ship.
+struct FFleetMotionReadout
+{
+	bool bSurgeValid = false;
+	bool bSogValid = false;
+	bool bStwValid = false;
+	bool bCogValid = false;
+	float SurgeKn = 0.f;
+	float SogKn = 0.f;
+	float StwKn = 0.f;
+	float CogDeg = 0.f;
+};
+
 UCLASS()
 class MARITIMEFUELEFFICIENCY_API AFleetShip : public APawn
 {
@@ -60,6 +75,8 @@ public:
 	float GetSurgeCms() const { return SurgeCms; }
 	float GetSwayCms() const { return SwayCms; }
 	float GetYawRate() const { return YawRateRad; }
+	bool HasMotionSample() const { return bMotionSample; }
+	FFleetMotionReadout GetMotionReadout(bool bSampleFresh, bool bCurrentValid, float CurrentMs, float CurrentDeg) const;
 
 private:
 	struct FShipSpec
@@ -138,6 +155,7 @@ private:
 	float RollVel = 0.f;
 	float RudderDeg = 0.f;
 	float SpeedKnots = 0.f;
+	bool bMotionSample = false;
 	float LeewayDeg = 0.f;
 	float DistanceRemainingM = 0.f;
 	float FuelTonnesPerHour = 0.f;

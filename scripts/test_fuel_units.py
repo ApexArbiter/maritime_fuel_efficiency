@@ -8,11 +8,17 @@ the fuel term below and is not equal to it.
 """
 
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 
+import numpy as np
+
 sys.path.insert(0, os.path.dirname(__file__))
+import mmg_env
 import mmg_physics as mmg
+import route_telemetry as telemetry
 
 INSTALLED_POWER_KW = (45700.0, 13500.0, 9800.0)
 
@@ -49,7 +55,69 @@ class FuelUnitTest(unittest.TestCase):
         print("FUEL_KG_S power_kw=1000 rate_kg_s=%.10f hour_kg=%.6f" % (rate, hour_kg))
         self.assertAlmostEqual(rate, 0.0486111111, places=7)
         self.assertAlmostEqual(hour_kg, 175.0, places=6)
-        self.assertAlmostEqual(rate * 1000.0, 1000.0 * 175.0 / 3600.0, places=6)
+        self.assertAlmostEqual(rate, 1000.0 * 175.0 / 3_600_000.0, places=9)
+        self.assertNotAlmostEqual(rate, 1000.0 * 175.0 / 3600.0, places=2)
+
+    def test_one_hundred_kilowatts(self):
+        rate = mmg.fuel_rate_kg_s(100.0)
+        print("FUEL_KG_S power_kw=100 rate_kg_s=%.10f hour_kg=%.6f" % (rate, rate * 3600.0))
+        self.assertAlmostEqual(rate, 0.0048611111, places=7)
+        self.assertAlmostEqual(rate * 3600.0, 17.5, places=6)
+        self.assertAlmostEqual(rate, 100.0 * 175.0 / 3_600_000.0, places=9)
+        self.assertEqual(mmg.SFOC_G_PER_KWH, 175.0)
+
+    def test_bad_power_and_repeated_recording_do_not_add_fuel(self):
+        self.assertEqual(mmg_env.step_fuel_tonnes(0.0, 0.02), 0.0)
+        self.assertEqual(mmg_env.step_fuel_tonnes(-10.0, 0.02), 0.0)
+        self.assertEqual(mmg_env.step_fuel_tonnes(None, 0.02), 0.0)
+        self.assertEqual(mmg_env.step_fuel_tonnes(float("nan"), 0.02), 0.0)
+        self.assertEqual(mmg_env.step_fuel_tonnes(float("inf"), 0.02), 0.0)
+        self.assertLess(mmg.fuel_rate_kg_s(-1000.0), 0.0)
+        rate_tph = mmg.fuel_rate_kg_s(1000.0) * 3.6
+        total = 0.0
+        for _ in range(50):
+            total += mmg_env.step_fuel_tonnes(rate_tph, 0.02)
+        self.assertAlmostEqual(total * 1000.0, mmg.fuel_rate_kg_s(1000.0), places=9)
+        snapshot = total
+        mmg_env.step_fuel_tonnes(rate_tph, 1.0)
+        self.assertEqual(total, snapshot)
+        root = tempfile.mkdtemp(prefix="fuel_once_")
+        try:
+            log = telemetry.RouteTelemetry(root, "fuel", "units")
+            sample = {"step_index": 1, "fuel_status": "estimated", "fuel_step_kg": 0.2, "sim_time_s": 1.0}
+            self.assertEqual(log.record_sample(sample), "recorded")
+            self.assertEqual(log.record_sample(dict(sample)), "duplicate")
+            self.assertAlmostEqual(log.fuel_cumulative_kg, 0.2, places=9)
+            log.finalize("truncated")
+        finally:
+            shutil.rmtree(root)
+
+    def test_environment_adds_each_substep_once_and_the_reward_is_not_fuel(self):
+        env = mmg_env.MaritimeRoutingEnv(destination_m=(2000.0, 0.0), step_s=1.0, max_steps=3)
+        env.reset(options={"heading_deg": 0.0})
+        calls = []
+        real = mmg_env.mmg.integrate
+
+        def wrapped(ship, clock, dt):
+            result = real(ship, clock, dt)
+            calls.append((dt, result[1]))
+            return result
+
+        mmg_env.mmg.integrate = wrapped
+        try:
+            _, reward, _, _, info = env.step(np.array([0.0, 1.0]))
+        finally:
+            mmg_env.mmg.integrate = real
+        expected = sum(mmg_env.step_fuel_tonnes(rate, dt) for dt, rate in calls)
+        self.assertEqual(len(calls), 50)
+        self.assertTrue(all(abs(dt - 0.02) < 1.0e-12 for dt, _rate in calls))
+        self.assertAlmostEqual(info["fuel_t"], expected, places=12)
+        parts = info["progress_reward"] + info["deviation_reward"] + info["effort_reward"] + info["fuel_reward"]
+        self.assertAlmostEqual(reward, parts, places=6)
+        self.assertEqual(info["reward_name"], "routing_reward")
+        self.assertNotAlmostEqual(reward, info["fuel_t"], places=3)
+        self.assertIsNone(info["hotel_load_kw"])
+        self.assertIsNone(mmg_env.HOTEL_LOAD_KW)
 
     def test_step_fuel_uses_the_kg_s_rate(self):
         surge_ms = 15.5 * mmg.KNOT_MS
@@ -95,7 +163,7 @@ class FuelUnitTest(unittest.TestCase):
 
     def test_reported_reward_is_not_the_fuel_term(self):
         reported = 2327.0
-        print("REWARD_INVESTIGATION reported=-2327 gym=none reward_function=none")
+        print("REWARD_INVESTIGATION reported=-2327 live_reward=routing_reward historical_label=not_the_live_reward")
         for power_kw in INSTALLED_POWER_KW:
             corrected = mmg.fuel_rate_kg_s(power_kw)
             buggy = power_kw * 175.0 / 3600.0
